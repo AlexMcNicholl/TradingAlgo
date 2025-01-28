@@ -26,11 +26,6 @@ def fetch_delayed_data(ib, ticker, duration, bar_size):
     return data['close']
 
 
-def test_cointegration(y, x):
-    """Test if two time series are cointegrated."""
-    score, p_value, _ = coint(y, x)
-    return p_value
-
 def calculate_half_life(spread):
     """Calculate the half-life of mean reversion for the spread."""
     spread_lag = spread.shift(1).dropna()
@@ -80,7 +75,7 @@ def plot_strategy(zscore, spread, buy_signals, sell_signals):
     plt.title('Z-Score with Buy/Sell Signals')
     plt.legend()
     plt.grid(True)
-
+     
     # Spread Plot
     plt.subplot(2, 1, 2)
     plt.plot(spread.index, spread, label='Spread', color='blue')
@@ -104,12 +99,12 @@ def main():
         return
 
     # Define stocks
-    ticker1 = Stock('LUMN', 'SMART', 'USD')
-    ticker2 = Stock('VOD', 'SMART', 'USD')
+    ticker1 = Stock('YUM', 'SMART', 'USD')
+    ticker2 = Stock('MDT', 'SMART', 'USD')
 
     # Fetch delayed data
     duration = "360 D"  # Longer timescale
-    bar_size = "1 day"
+    bar_size = "10 day"
     y_data = fetch_delayed_data(ib, ticker1, duration, bar_size)
     x_data = fetch_delayed_data(ib, ticker2, duration, bar_size)
 
@@ -121,11 +116,7 @@ def main():
     combined = pd.concat([y_data, x_data], axis=1).dropna()
     combined.columns = ['Asset Y', 'Asset X']
 
-    # Check cointegration
-    p_value = test_cointegration(combined['Asset Y'], combined['Asset X'])
-    if p_value > 0.05:
-        print("The selected assets are not cointegrated. Exiting.")
-        return
+
 
     # Calculate hedge ratio and spread
     hedge_ratio = calculate_hedge_ratio(combined['Asset Y'], combined['Asset X'])
