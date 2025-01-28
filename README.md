@@ -7,16 +7,18 @@
 Phase 1: Build and Validate the Algorithm
 
 Develop the Core Model:
-Focus on cointegration, spread modeling, and z-score calculation.
-Ensure entry and exit signals are based on sound statistical principles.
-Include risk management mechanisms (e.g., stop-loss, position sizing).
+Focus on cointegration, spread modeling, and z-score calculation. ✅
+Ensure entry and exit signals are based on sound statistical principles. ✅
+Include risk management mechanisms (e.g., stop-loss, position sizing). - // Needs to be completed
 
 Backtest Thoroughly:
 Test the strategy across multiple timeframes and market conditions.
 Incorporate realistic assumptions:
 Transaction costs.
 Slippage and execution delays.
-Use metrics like Sharpe Ratio, Sortino Ratio, drawdown, and profit factor to evaluate performance.
+Use metrics like Sharpe Ratio, Sortino Ratio, drawdown, and profit factor to evaluate performance. ✅
+
+**Backtest has a lot of issues**
 
 Simulate Paper Trading:
 Use historical replay or a live data simulation (with no actual trade execution).
