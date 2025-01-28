@@ -1,21 +1,27 @@
-import sqlite3
 import yfinance as yf
 import pandas as pd
+import numpy as np
 import itertools
 from statsmodels.tsa.stattools import coint, adfuller
+import matplotlib.pyplot as plt
+from ib_insync import IB, Stock, Future, Forex
 
-def fetch_tickers_from_db(db_path):
-    """Fetch tickers from the SQLite database."""
-    try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT symbol FROM tickers")
-        tickers = [row[0] for row in cursor.fetchall()]
-        conn.close()
-        return tickers
-    except sqlite3.Error as e:
-        print(f"Database error: {e}")
-        return []
+# Initialize IBKR API connection
+ib = IB()
+ib.connect('127.0.0.1', 7497, clientId=1)  # Replace 7497 with 4002 if using IB Gateway
+
+def fetch_tickers_from_api():
+    """Fetch tickers dynamically using IBKR API for each asset class."""
+    equities = [Stock(ticker, 'SMART', 'USD') for ticker in ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA']]
+    commodities = [Future(symbol, exchange) for symbol, exchange in [('CL', 'NYMEX'), ('GC', 'COMEX'), ('SI', 'COMEX')]]
+    forex_pairs = ['EURUSD=X', 'GBPUSD=X', 'AUDUSD=X', 'USDJPY=X']  # Update to Yahoo Finance-compatible symbols
+
+    # Qualify contracts via IBKR (for equities and commodities)
+    qualified_equities = ib.qualifyContracts(*equities)
+    qualified_commodities = ib.qualifyContracts(*commodities)
+
+    # Combine tickers into a single list
+    return [contract.symbol for contract in qualified_equities + qualified_commodities] + forex_pairs
 
 def fetch_data(tickers):
     """Fetch historical data for given tickers using yfinance."""
@@ -35,6 +41,79 @@ def test_adf(spread):
     """Perform ADF test on the spread and return p-value."""
     result = adfuller(spread)
     return result[1]
+
+def calculate_dynamic_zscore(spread, window=30):
+    """Calculate a rolling Z-score for the spread."""
+    rolling_mean = spread.rolling(window=min(len(spread), window)).mean()
+    rolling_std = spread.rolling(window=min(len(spread), window)).std()
+    zscore = (spread - rolling_mean) / rolling_std
+    return zscore.interpolate().rolling(window=5).mean().dropna()
+
+
+def rolling_cointegration(y, x, window=120):
+    """Perform rolling cointegration tests and return p-values."""
+    results = []
+    for start in range(len(y) - window):
+        end = start + window
+        p_value = test_cointegration(y[start:end], x[start:end])
+        results.append(p_value)
+    return pd.Series(results, index=y.index[window:])
+
+def hurst_exponent(series, max_lag=100):
+    """Calculate the Hurst exponent to detect mean-reversion (H < 0.5)."""
+    lags = range(2, max_lag)
+    tau = [np.std(series.diff(lag)) for lag in lags]
+    hurst = np.polyfit(np.log(lags), np.log(tau), 1)[0]
+    return hurst
+
+def adaptive_thresholds(spread, window=60):
+    """Calculate adaptive buy/sell thresholds based on spread volatility."""
+    rolling_std = spread.rolling(window).std()
+    upper_threshold = rolling_std * 2
+    lower_threshold = -rolling_std * 2
+    return upper_threshold, lower_threshold
+
+def plot_spread(series1, series2, spread, zscore, p_value, adf_value, correlation):
+    """Plot the spread of the identified pair and display test results."""
+    plt.figure(figsize=(14, 8))
+
+    # Plot asset prices (primary y-axis)
+    ax1 = plt.subplot(211)
+    ax1.plot(series1.index, series1, label='Asset 1', color='blue')
+    ax1.plot(series2.index, series2, label='Asset 2', color='orange')
+    ax1.set_title('Price Movement of Assets', fontsize=14)
+    ax1.set_ylabel('Price', fontsize=12)
+    ax1.legend(loc='upper left', fontsize=10)
+    ax1.grid(alpha=0.3)
+
+    # Plot spread and Z-score (secondary y-axis)
+    ax2 = plt.subplot(212)
+    ax2.plot(spread.index, spread, label='Spread', color='green')
+    ax2.axhline(spread.mean(), color='red', linestyle='--', label='Spread Mean')
+    ax2.set_ylabel('Spread', fontsize=12)
+    
+    ax3 = ax2.twinx()
+    ax3.plot(zscore.index, zscore, label='Z-Score', color='purple', linestyle='dotted')
+    ax3.axhline(0, color='gray', linestyle='--')
+    ax3.set_ylabel('Z-Score', fontsize=12)
+
+    # Display statistical results on the graph
+    textstr = (
+        f"Cointegration P-Value: {p_value:.5f}\\n"
+        f"ADF P-Value: {adf_value:.5f}\\n"
+        f"Correlation: {correlation:.5f}"
+    )
+    ax2.text(0.75, 0.05, textstr, transform=ax2.transAxes, fontsize=10,
+             verticalalignment='bottom', bbox=dict(facecolor='white', alpha=0.75, edgecolor='gray'))
+
+    ax2.set_title('Spread and Z-Score of Identified Pair', fontsize=14)
+    ax2.set_xlabel('Date', fontsize=12)
+    ax2.legend(loc='upper left', fontsize=10)
+    ax2.grid(alpha=0.3)
+
+    plt.tight_layout()
+    plt.show()
+
 
 def identify_cointegrated_pairs(data):
     """Identify cointegrated pairs and return the pair with the best statistical values."""
@@ -73,6 +152,10 @@ def identify_cointegrated_pairs(data):
     # Create a DataFrame of results
     results_df = pd.DataFrame(results)
 
+    # Show all tested pairs for debugging
+    print("\nAll Pair Test Results:")
+    print(results_df)
+
     # Filter pairs with cointegration p-value < 0.05 and ADF p-value < 0.05
     filtered_results = results_df[
         (results_df['Cointegration P-Value'] < 0.05) &
@@ -81,34 +164,40 @@ def identify_cointegrated_pairs(data):
 
     if filtered_results.empty:
         print("No pairs meet the criteria for cointegration and stationarity.")
-        return None
+        # Fallback: Use the pair with the lowest Cointegration P-Value
+        best_pair = results_df.sort_values(by='Cointegration P-Value').iloc[0]
+        print("\nFallback Pair (Lowest Cointegration P-Value):")
+        print(f"Pair: {best_pair['Stock 1']} and {best_pair['Stock 2']}")
+        print(f"Cointegration P-Value: {best_pair['Cointegration P-Value']:.5f}")
+        print(f"ADF P-Value: {best_pair['ADF P-Value']:.5f}")
+        print(f"Correlation: {best_pair['Correlation']:.5f}")
+    else:
+        best_pair = filtered_results.sort_values(by='Cointegration P-Value').iloc[0]
 
-    # Find the best pair based on the lowest Cointegration P-Value
-    best_pair = filtered_results.sort_values(by='Cointegration P-Value').iloc[0]
+    # Calculate spread and Z-score for the best or fallback pair
+    spread = data[best_pair['Stock 1']] - data[best_pair['Stock 2']]
+    zscore = calculate_dynamic_zscore(spread)
 
-    # Add context to the output
-    print("\nBest Cointegrated Pair and Statistical Tests:")
-    print(f"Pair: {best_pair['Stock 1']} and {best_pair['Stock 2']}")
-    print(f"\nCointegration P-Value: {best_pair['Cointegration P-Value']:.5f}")
-    print("  - A p-value below 0.05 indicates a strong likelihood that these stocks are cointegrated, meaning they share a long-term equilibrium relationship.")
-    print(f"\nADF P-Value: {best_pair['ADF P-Value']:.5f}")
-    print("  - A p-value below 0.05 suggests the spread between these stocks is stationary (mean-reverting), which is ideal for pairs trading.")
-    print(f"\nCorrelation: {best_pair['Correlation']:.5f}")
-    print("  - Indicates the strength and direction of the linear relationship between the stocks. Values close to 1 imply a strong positive correlation.")
+    # Validate fallback pair with Hurst exponent
+    hurst = hurst_exponent(spread)
+    print(f"Hurst Exponent: {hurst:.5f}")
+    if hurst >= 0.5:
+        print("Warning: Spread may not be mean-reverting.")
+
+    # Plot the spread and Z-score of the best or fallback pair
+    plot_spread(data[best_pair['Stock 1']], data[best_pair['Stock 2']], spread, zscore,
+                best_pair['Cointegration P-Value'], best_pair['ADF P-Value'], best_pair['Correlation'])
 
     return best_pair
 
 def main():
-    # Path to the SQLite database
-    db_path = 'tickers.db'
-
-    # Fetch tickers from the database
-    tickers = fetch_tickers_from_db(db_path)
+    # Fetch tickers dynamically
+    tickers = fetch_tickers_from_api()
     if not tickers:
         print("No tickers found. Exiting.")
         return
 
-    print(f"Tickers fetched from database: {tickers}")
+    print(f"Tickers fetched: {tickers}")
 
     # Fetch historical data
     print("Fetching data...")
