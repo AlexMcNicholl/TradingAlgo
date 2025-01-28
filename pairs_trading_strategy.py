@@ -26,22 +26,6 @@ def fetch_delayed_data(ib, ticker, duration, bar_size):
     return data['close']
 
 
-def calculate_half_life(spread):
-    """Calculate the half-life of mean reversion for the spread."""
-    spread_lag = spread.shift(1).dropna()
-    delta_spread = spread.diff().dropna()
-    beta = np.polyfit(spread_lag, delta_spread, 1)[0]
-    half_life = -np.log(2) / beta
-    return max(1, half_life)  # Ensure half-life is positive
-
-def adaptive_thresholds(spread, window=60):
-    """Calculate adaptive buy/sell thresholds based on spread volatility."""
-    rolling_std = spread.rolling(window).std()
-    upper_threshold = rolling_std * 2
-    lower_threshold = -rolling_std * 2
-    return upper_threshold, lower_threshold
-
-
 def calculate_hedge_ratio(y, x):
     """Calculate the hedge ratio using numpy."""
     cov_matrix = np.cov(y, x)
@@ -53,12 +37,14 @@ def calculate_spread(y, x, hedge_ratio):
     """Calculate the spread between two assets."""
     return y - hedge_ratio * x
 
+
 def calculate_zscore(spread, window=30):
     """Calculate the z-score for the spread."""
     rolling_mean = spread.rolling(window).mean()
     rolling_std = spread.rolling(window).std()
     zscore = (spread - rolling_mean) / rolling_std
     return zscore
+
 
 def plot_strategy(zscore, spread, buy_signals, sell_signals):
     """Plot Z-Score, Spread, and Buy/Sell Signals."""
@@ -68,14 +54,14 @@ def plot_strategy(zscore, spread, buy_signals, sell_signals):
     plt.subplot(2, 1, 1)
     plt.plot(zscore.index, zscore, label='Z-Score', color='blue')
     plt.axhline(0, color='gray', linestyle='--')
-    plt.axhline(1.0, color='purple', linestyle='--', label='Sell Threshold (+1.0)')
-    plt.axhline(-1.0, color='purple', linestyle='--', label='Buy Threshold (-1.0)')
+    plt.axhline(1.5, color='purple', linestyle='--', label='Sell Threshold (+1.5)')
+    plt.axhline(-1.5, color='purple', linestyle='--', label='Buy Threshold (-1.5)')
     plt.scatter(buy_signals.index, buy_signals, color='green', marker='^', label='Buy Signal')
     plt.scatter(sell_signals.index, sell_signals, color='red', marker='v', label='Sell Signal')
     plt.title('Z-Score with Buy/Sell Signals')
     plt.legend()
     plt.grid(True)
-     
+    
     # Spread Plot
     plt.subplot(2, 1, 2)
     plt.plot(spread.index, spread, label='Spread', color='blue')
@@ -89,6 +75,7 @@ def plot_strategy(zscore, spread, buy_signals, sell_signals):
     plt.tight_layout()
     plt.show()
 
+
 def main():
     # Connect to Interactive Brokers
     ib = IB()
@@ -99,12 +86,12 @@ def main():
         return
 
     # Define stocks
-    ticker1 = Stock('YUM', 'SMART', 'USD')
-    ticker2 = Stock('MDT', 'SMART', 'USD')
+    ticker1 = Stock('AMAT', 'SMART', 'USD')
+    ticker2 = Stock('AMZN', 'SMART', 'USD')
 
     # Fetch delayed data
     duration = "360 D"  # Longer timescale
-    bar_size = "10 day"
+    bar_size = "1 day"  # Use a valid bar size
     y_data = fetch_delayed_data(ib, ticker1, duration, bar_size)
     x_data = fetch_delayed_data(ib, ticker2, duration, bar_size)
 
@@ -116,20 +103,16 @@ def main():
     combined = pd.concat([y_data, x_data], axis=1).dropna()
     combined.columns = ['Asset Y', 'Asset X']
 
-
-
     # Calculate hedge ratio and spread
     hedge_ratio = calculate_hedge_ratio(combined['Asset Y'], combined['Asset X'])
     spread = calculate_spread(combined['Asset Y'], combined['Asset X'], hedge_ratio)
 
-    # Calculate half-life and Z-score
-    half_life = calculate_half_life(spread)
-    zscore = calculate_zscore(spread, window=int(half_life))
+    # Calculate Z-score
+    zscore = calculate_zscore(spread, window=30)
 
-    # Generate adaptive thresholds
-    upper_threshold, lower_threshold = adaptive_thresholds(spread, window=60)
-    buy_signals = zscore[zscore < lower_threshold]
-    sell_signals = zscore[zscore > upper_threshold]
+    # Use absolute thresholds for buy/sell signals
+    buy_signals = zscore[zscore < -1.5]
+    sell_signals = zscore[zscore > 1.5]
 
     # Plot strategy
     plot_strategy(zscore, spread, buy_signals, sell_signals)
