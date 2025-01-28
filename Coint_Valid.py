@@ -5,36 +5,44 @@ import itertools
 from statsmodels.tsa.stattools import coint, adfuller
 import matplotlib.pyplot as plt
 from ib_insync import IB, Stock, Future, Forex
+import ssl 
+ssl._create_default_https_context = ssl._create_unverified_context
+
+
+
 
 # Initialize IBKR API connection
 ib = IB()
 ib.connect('127.0.0.1', 7497, clientId=1)  # Replace 7497 with 4002 if using IB Gateway
 
-def fetch_sp500_tickers():
+def fetch_sp500_tickers(limit=None):
     """Fetch all S&P 500 tickers dynamically from Wikipedia."""
     url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
     sp500_table = pd.read_html(url, header=0)[0]
-    return sp500_table['Symbol'].tolist()
+    tickers = sp500_table['Symbol'].tolist()
+    return tickers[:limit] if limit else tickers
 
-def fetch_commodity_tickers_from_ib():
+def fetch_commodity_tickers_from_ib(limit=None):
     """Fetch available commodity futures tickers dynamically from IBKR."""
     commodity_symbols = ['CL', 'GC', 'SI', 'ZC', 'NG']  # Add more as needed
     futures = [Future(symbol, 'NYMEX') for symbol in commodity_symbols]
     qualified_contracts = ib.qualifyContracts(*futures)
-    return [contract.symbol for contract in qualified_contracts]
+    tickers = [contract.symbol for contract in qualified_contracts]
+    return tickers[:limit] if limit else tickers
 
-def fetch_forex_tickers_from_ib():
+def fetch_forex_tickers_from_ib(limit=None):
     """Fetch forex pairs dynamically from IBKR."""
     forex_pairs = ['EURUSD', 'USDJPY', 'GBPUSD', 'AUDUSD', 'EURGBP', 'AUDJPY']
     forex = [Forex(pair) for pair in forex_pairs]
     qualified_forex = ib.qualifyContracts(*forex)
-    return [contract.symbol for contract in qualified_forex]
+    tickers = [contract.symbol for contract in qualified_forex]
+    return tickers[:limit] if limit else tickers
 
-def fetch_all_tickers():
-    """Fetch all asset tickers dynamically."""
-    equities = fetch_sp500_tickers()  # Large equity universe
-    commodities = fetch_commodity_tickers_from_ib()
-    forex = fetch_forex_tickers_from_ib()
+def fetch_all_tickers(equities_limit=None, commodities_limit=None, forex_limit=None):
+    """Fetch all asset tickers dynamically with limits."""
+    equities = fetch_sp500_tickers(limit=equities_limit)  # Large equity universe
+    commodities = fetch_commodity_tickers_from_ib(limit=commodities_limit) # Select number of commodities
+    forex = fetch_forex_tickers_from_ib(limit=forex_limit) # Select number of FX rates
     return equities + commodities + forex
 
 def fetch_data(tickers):
@@ -139,7 +147,7 @@ def test_pairs(data, pairs):
     return pd.DataFrame(results)
 
 def identify_cointegrated_pairs(data):
-    """Identify cointegrated pairs and return the pair with the best statistical values."""
+    """Identify cointegrated pairs and return the top-ranked statistical values."""
     # Pre-filter pairs with high correlation
     print("Filtering high-correlation pairs...")
     pairs = filter_high_correlation(data)
@@ -156,24 +164,39 @@ def identify_cointegrated_pairs(data):
     best_pairs = results[
         (results['Cointegration P-Value'] < 0.05) & (results['ADF P-Value'] < 0.05)
     ]
+
     if best_pairs.empty:
         print("No pairs meet the criteria.")
-        best_pair = results.sort_values(by='Cointegration P-Value').iloc[0]
-    else:
-        print("Best Cointegrated Pairs:")
-        print(best_pairs)
-        best_pair = best_pairs.sort_values(by='Cointegration P-Value').iloc[0]
+        return None
 
-    # Calculate spread and Z-score for the best pair
-    spread = data[best_pair['Stock 1']] - data[best_pair['Stock 2']]
-    zscore = calculate_dynamic_zscore(spread)
+    # Sort by cointegration p-value and select the top 3
+    best_pairs_sorted = best_pairs.sort_values(by='Cointegration P-Value').head(3)
 
-    plot_spread(data[best_pair['Stock 1']], data[best_pair['Stock 2']], spread, zscore,
-                best_pair['Cointegration P-Value'], best_pair['ADF P-Value'], best_pair['Correlation'])
+    print("\nTop 3 Cointegrated Pairs:")
+    print(best_pairs_sorted)
+
+    for i, row in best_pairs_sorted.iterrows():
+        # Calculate spread and Z-score for each top pair
+        spread = data[row['Stock 1']] - data[row['Stock 2']]
+        zscore = calculate_dynamic_zscore(spread)
+
+        print(f"\nPair Rank {i + 1}: {row['Stock 1']} & {row['Stock 2']}")
+        plot_spread(
+            data[row['Stock 1']],
+            data[row['Stock 2']],
+            spread,
+            zscore,
+            row['Cointegration P-Value'],
+            row['ADF P-Value'],
+            row['Correlation'],
+        )
+
+    return best_pairs_sorted
+
 
 def main():
     # Fetch all asset tickers dynamically
-    tickers = fetch_all_tickers()
+    tickers = fetch_all_tickers(equities_limit=50, commodities_limit=5, forex_limit=5)
     print(f"Fetched {len(tickers)} tickers.")
 
     # Fetch historical data
